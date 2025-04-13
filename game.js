@@ -51,6 +51,7 @@ class ConnectFour {
             this.createRoomBtn.disabled = true;
             this.joinRoomBtn.disabled = true;
             this.roomIdInput.disabled = true;
+            console.log('Room created:', this.roomId);
         });
         
         // Handle room join response
@@ -67,13 +68,16 @@ class ConnectFour {
             this.createRoomBtn.disabled = true;
             this.joinRoomBtn.disabled = true;
             this.roomIdInput.disabled = true;
+            console.log('Joined room:', this.roomId);
         });
         
         // Handle game start
         this.socket.on('gameStart', (data) => {
             this.isMultiplayer = true;
             this.waitingMessage.textContent = '';
+            this.isMyTurn = data.currentPlayer === this.socket.id;
             this.updateStatus();
+            console.log('Game started, my turn:', this.isMyTurn);
         });
         
         // Handle moves made by opponent
@@ -87,6 +91,7 @@ class ConnectFour {
             // Update turn status
             this.isMyTurn = currentPlayer === this.socket.id;
             this.updateStatus();
+            console.log('Move made, my turn:', this.isMyTurn);
         });
         
         // Handle game over
@@ -99,6 +104,7 @@ class ConnectFour {
                 const winner = data.winner === this.socket.id ? 'You' : 'Opponent';
                 this.statusElement.textContent = `${winner} Win!`;
             }
+            console.log('Game over:', data);
         });
         
         // Handle opponent leaving
@@ -109,6 +115,7 @@ class ConnectFour {
             this.createRoomBtn.disabled = false;
             this.joinRoomBtn.disabled = false;
             this.roomIdInput.disabled = false;
+            console.log('Opponent left');
         });
     }
     
@@ -133,6 +140,7 @@ class ConnectFour {
                 this.createRoomBtn.disabled = true;
                 this.joinRoomBtn.disabled = true;
                 this.roomIdInput.disabled = true;
+                console.log('Room created:', this.roomId);
             });
         });
         
@@ -156,6 +164,7 @@ class ConnectFour {
                 this.createRoomBtn.disabled = true;
                 this.joinRoomBtn.disabled = true;
                 this.roomIdInput.disabled = true;
+                console.log('Joined room:', this.roomId);
             });
         });
     }
@@ -165,14 +174,19 @@ class ConnectFour {
         
         // In multiplayer mode, only allow moves on your turn
         if (this.isMultiplayer && !this.isMyTurn) {
+            console.log('Not your turn');
             return;
         }
         
         const row = this.findLowestEmptyRow(col);
-        if (row === -1) return;
+        if (row === -1) {
+            console.log('Column is full');
+            return;
+        }
         
         // In multiplayer mode, send the move to the server
         if (this.isMultiplayer) {
+            console.log('Making move in multiplayer mode');
             this.socket.emit('makeMove', { roomId: this.roomId, col });
             this.isMyTurn = false;
             return;

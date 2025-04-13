@@ -8,116 +8,131 @@ const server = http.createServer(app);
 const io = socketIo(server);
 
 // Serve static files
-app.use(express.static(path.join(__dirname, '.')));
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Game rooms
 const rooms = new Map();
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
-    console.log('New client connected:', socket.id);
+    console.log('Player connected:', socket.id);
     
     // Handle room creation
     socket.on('createRoom', (callback) => {
         const roomId = generateRoomId();
         rooms.set(roomId, {
             players: [socket.id],
+            currentPlayer: socket.id,
             board: Array(6).fill().map(() => Array(7).fill(null)),
-            currentPlayer: 0,
-            gameOver: false
+            gameStarted: false
         });
+        
         socket.join(roomId);
+        console.log(`Room created: ${roomId} by player ${socket.id}`);
         callback({ roomId });
     });
     
-    // Handle joining a room
+    // Handle room joining
     socket.on('joinRoom', (roomId, callback) => {
         const room = rooms.get(roomId);
+        
         if (!room) {
+            console.log(`Room ${roomId} not found`);
             callback({ error: 'Room not found' });
             return;
         }
         
         if (room.players.length >= 2) {
+            console.log(`Room ${roomId} is full`);
             callback({ error: 'Room is full' });
             return;
         }
         
         room.players.push(socket.id);
         socket.join(roomId);
+        room.gameStarted = true;
+        
+        console.log(`Player ${socket.id} joined room ${roomId}`);
         callback({ success: true });
         
-        // Notify both players that the game can start
+        // Notify both players that the game has started
         io.to(roomId).emit('gameStart', {
-            players: room.players,
-            currentPlayer: room.players[room.currentPlayer]
+            currentPlayer: room.currentPlayer
         });
     });
     
-    // Handle game moves
-    socket.on('makeMove', (data) => {
-        const { roomId, col } = data;
+    // Handle moves
+    socket.on('makeMove', ({ roomId, col }) => {
         const room = rooms.get(roomId);
         
-        if (!room || room.gameOver) return;
+        if (!room) {
+            console.log(`Room ${roomId} not found for move`);
+            return;
+        }
         
-        // Check if it's the player's turn
-        const playerIndex = room.players.indexOf(socket.id);
-        if (playerIndex !== room.currentPlayer) return;
+        if (!room.gameStarted) {
+            console.log(`Game not started in room ${roomId}`);
+            return;
+        }
+        
+        if (room.currentPlayer !== socket.id) {
+            console.log(`Not ${socket.id}'s turn in room ${roomId}`);
+            return;
+        }
         
         // Find the lowest empty row in the selected column
         const row = findLowestEmptyRow(room.board, col);
-        if (row === -1) return;
+        
+        if (row === -1) {
+            console.log(`Column ${col} is full in room ${roomId}`);
+            return;
+        }
         
         // Make the move
+        const playerIndex = room.players.indexOf(socket.id);
         room.board[row][col] = playerIndex;
         
+        console.log(`Move made in room ${roomId}: row=${row}, col=${col}, player=${playerIndex}`);
+        
         // Check for win
-        if (checkWin(room.board, row, col, playerIndex)) {
-            room.gameOver = true;
-            io.to(roomId).emit('gameOver', {
-                winner: socket.id,
-                board: room.board
-            });
+        if (checkWin(room.board, row, col)) {
+            console.log(`Player ${socket.id} won in room ${roomId}`);
+            io.to(roomId).emit('gameOver', { winner: socket.id });
+            rooms.delete(roomId);
             return;
         }
         
         // Check for draw
         if (checkDraw(room.board)) {
-            room.gameOver = true;
-            io.to(roomId).emit('gameOver', {
-                draw: true,
-                board: room.board
-            });
+            console.log(`Game draw in room ${roomId}`);
+            io.to(roomId).emit('gameOver', { draw: true });
+            rooms.delete(roomId);
             return;
         }
         
         // Switch turns
-        room.currentPlayer = (room.currentPlayer + 1) % 2;
+        room.currentPlayer = room.players.find(id => id !== socket.id);
         
         // Broadcast the move to all players in the room
         io.to(roomId).emit('moveMade', {
             row,
             col,
             player: playerIndex,
-            currentPlayer: room.players[room.currentPlayer]
+            currentPlayer: room.currentPlayer
         });
     });
     
     // Handle disconnection
     socket.on('disconnect', () => {
-        console.log('Client disconnected:', socket.id);
+        console.log('Player disconnected:', socket.id);
         
-        // Find and clean up rooms where this player was
+        // Find and clean up rooms where this player was participating
         for (const [roomId, room] of rooms.entries()) {
-            const playerIndex = room.players.indexOf(socket.id);
-            if (playerIndex !== -1) {
-                room.players.splice(playerIndex, 1);
-                if (room.players.length === 0) {
-                    rooms.delete(roomId);
-                } else {
-                    io.to(roomId).emit('playerLeft');
-                }
+            if (room.players.includes(socket.id)) {
+                console.log(`Player ${socket.id} left room ${roomId}`);
+                io.to(roomId).emit('playerLeft');
+                rooms.delete(roomId);
+                break;
             }
         }
     });
@@ -129,7 +144,7 @@ function generateRoomId() {
 }
 
 function findLowestEmptyRow(board, col) {
-    for (let row = 5; row >= 0; row--) {
+    for (let row = board.length - 1; row >= 0; row--) {
         if (board[row][col] === null) {
             return row;
         }
@@ -137,32 +152,40 @@ function findLowestEmptyRow(board, col) {
     return -1;
 }
 
-function checkWin(board, row, col, player) {
-    // Check horizontal
-    let count = 1;
-    for (let i = col - 1; i >= 0 && board[row][i] === player; i--) count++;
-    for (let i = col + 1; i < 7 && board[row][i] === player; i++) count++;
-    if (count >= 4) return true;
+function checkWin(board, row, col) {
+    const directions = [
+        [[0, 1], [0, -1]],  // horizontal
+        [[1, 0], [-1, 0]],  // vertical
+        [[1, 1], [-1, -1]], // diagonal /
+        [[1, -1], [-1, 1]]  // diagonal \
+    ];
     
-    // Check vertical
-    count = 1;
-    for (let i = row - 1; i >= 0 && board[i][col] === player; i--) count++;
-    for (let i = row + 1; i < 6 && board[i][col] === player; i++) count++;
-    if (count >= 4) return true;
+    const player = board[row][col];
     
-    // Check diagonal (top-left to bottom-right)
-    count = 1;
-    for (let i = 1; row - i >= 0 && col - i >= 0 && board[row-i][col-i] === player; i++) count++;
-    for (let i = 1; row + i < 6 && col + i < 7 && board[row+i][col+i] === player; i++) count++;
-    if (count >= 4) return true;
+    return directions.some(dir => {
+        const count = 1 + 
+            countDirection(board, row, col, dir[0][0], dir[0][1], player) +
+            countDirection(board, row, col, dir[1][0], dir[1][1], player);
+        return count >= 4;
+    });
+}
+
+function countDirection(board, row, col, deltaRow, deltaCol, player) {
+    let count = 0;
+    let currentRow = row + deltaRow;
+    let currentCol = col + deltaCol;
     
-    // Check diagonal (top-right to bottom-left)
-    count = 1;
-    for (let i = 1; row - i >= 0 && col + i < 7 && board[row-i][col+i] === player; i++) count++;
-    for (let i = 1; row + i < 6 && col - i >= 0 && board[row+i][col-i] === player; i++) count++;
-    if (count >= 4) return true;
+    while (
+        currentRow >= 0 && currentRow < board.length &&
+        currentCol >= 0 && currentCol < board[0].length &&
+        board[currentRow][currentCol] === player
+    ) {
+        count++;
+        currentRow += deltaRow;
+        currentCol += deltaCol;
+    }
     
-    return false;
+    return count;
 }
 
 function checkDraw(board) {
